@@ -15,15 +15,20 @@ bool Imu::begin() {
   SPI1.setMISO(config::IMU_MISO);
   SPI1.setMOSI(config::IMU_MOSI);
   SPI1.setSCK(config::IMU_SCK);
+  ICM_20948_fss_t myFSS;
+  myFSS.a = gpm2;
+  myFSS.g = dps250;
+  myICM.setFullScale((ICM_20948_Internal_Acc | ICM_20948_Internal_Gyr), myFSS);
+
+  ICM_20948_dlpcfg_t myDLPcfg;
+  myDLPcfg.a = acc_d473bw_n499bw;
+  myDLPcfg.g = gyr_d361bw4_n376bw5;
 
   // Each call returns a negative number if configuration failed.
   if (device_.begin6Axis() < 0) {
     return false;
   }
-  if (device_.setGyroRange(device_.GYRO_RANGE_250DPS) < 0) {
-    return false;
-  }
-  if (device_.setAccelRange(device_.ACCEL_RANGE_2G) < 0) {
+  if (myICM.status != ICM_20948_Stat_Ok) {
     return false;
   }
   if (device_.setSrd(0) < 0) {
@@ -31,6 +36,8 @@ bool Imu::begin() {
   }
   return true;
 }
+
+
 
 ImuSample Imu::read() {
   int16_t rawAcceleration[3];

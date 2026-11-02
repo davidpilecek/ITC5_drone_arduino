@@ -4,7 +4,7 @@
 #include <SPI.h>
 #include <Wire.h>
 #include <VL53L1X.h>
-#include "MPU9250/MPU9250.h"
+#include "ICM_20948.h" 
 #include "Types.h"
 #include "Config.h"
 
@@ -26,7 +26,7 @@ class Imu {
   ImuCalibration calibrate(unsigned numberOfSamples = 12000);
 
  private:
-  MPU9250 device_;
+  ICM_20948_SPI device_;
 };
 
 // Handles the distance sensor and corrects its reading for vehicle tilt.
