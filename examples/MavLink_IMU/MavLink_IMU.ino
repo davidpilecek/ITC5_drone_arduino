@@ -58,7 +58,7 @@ void loop() {
   const itc::Attitude& attitude = estimator.update(measurement, elapsedSeconds);
 
   if (nowMav - lastMillisMav >= PRINT_PERIOD_MS){
-    // Link1.sendHeartbeat();
+    Link1.sendHeartbeat();
     Link1.sendFloat(nowMav, "roll", attitude.rollDeg);
     Link1.sendFloat(nowMav, "pitch", attitude.pitchDeg);
     Link1.sendFloat(nowMav, "yaw", attitude.yawDeg);

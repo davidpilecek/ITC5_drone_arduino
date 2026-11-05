@@ -4,7 +4,7 @@
 #include <SPI.h>
 #include <Wire.h>
 #include <VL53L1X.h>
-#include "ICM_20948.h" 
+#include <ICM_20948.h>
 #include "Types.h"
 #include "Config.h"
 
@@ -16,6 +16,14 @@ struct ImuCalibration {
   float gyroBiasDps[3] = {};
 };
 
+// Rotate through all orientations for magnetometer calibration (motors off).
+// Diagonal scale correction approximates axis-aligned soft-iron distortion.
+struct MagnetometerCalibration {
+  float biasUt[3] = {};
+  float scale[3] = {1.0f, 1.0f, 1.0f};
+  bool valid = false;
+};
+
 // Reads raw acceleration and rotation, converts units and subtracts offsets.
 // Estimating angles is a separate job, done by AttitudeEstimator.
 class Imu {
@@ -24,9 +32,20 @@ class Imu {
   bool begin();
   ImuSample read();
   ImuCalibration calibrate(unsigned numberOfSamples = 12000);
+  // Blocking setup-only routine; rotates vehicle by hand for durationMs.
+  // Returns and applies a valid result; failure leaves old calibration intact.
+  MagnetometerCalibration calibrateMagnetometer(uint32_t durationMs = 30000);
+  bool setMagnetometerCalibration(const MagnetometerCalibration& calibration);
+  MagnetometerCalibration magnetometerCalibration() const { return magCalibration_; }
 
  private:
+  bool readFresh(ImuSample& measurement);
   ICM_20948_SPI device_;
+  bool started_ = false;
+  bool hasSample_ = false;
+  uint32_t lastSampleUs_ = 0;
+  ImuSample lastSample_;
+  MagnetometerCalibration magCalibration_;
 };
 
 // Handles the distance sensor and corrects its reading for vehicle tilt.

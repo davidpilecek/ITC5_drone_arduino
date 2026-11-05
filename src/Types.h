@@ -34,6 +34,11 @@ inline float clampValue(float value, float minimum, float maximum) {
 struct ImuSample {
   float accelG[3] = {};
   float gyroDps[3] = {};
+  float magRawUt[3] = {NAN, NAN, NAN}; // Before user calibration, in sensor axes.
+  float magUt[3] = {NAN, NAN, NAN};    // (raw - bias) * scale, microteslas.
+  bool magValid = false;             // Ready, finite and no magnetic overflow.
+  bool magCalibrated = false;        // User calibration applied to magUt.
+
 };
 
 // The estimator's best current description of the vehicle's orientation.

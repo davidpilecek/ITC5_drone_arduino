@@ -4,6 +4,7 @@
 #include "Receiver.h"
 #include "Motors.h"
 #include "Control.h"
+#include "FlightTelemetry.h"
 
 namespace itc {
 
@@ -24,6 +25,13 @@ class FlightApp {
   AttitudeEstimator estimator_;
   AttitudeController attitudeController_;
   HeightController heightController_;
+  FlightTelemetry telemetry_;
+
+  // Copies of the calculations already performed in the current control cycle.
+  // Logging these must never run a controller for a second time.
+  Setpoints diagnosticSetpoints_;
+  Effort diagnosticCorrections_;
+  bool attitudeControlActive_ = false;
 
   bool imuReady_ = false;
   Timing timing_;
@@ -47,6 +55,9 @@ class FlightApp {
   void printCalibration(const ImuCalibration& calibration);
   void printStartupInformation();
   void printTelemetry(const RcState& pilotCommands, const Attitude& measuredAttitude);
+  void captureMavlinkDiagnostics(
+      uint32_t nowMs, const RcState& pilotCommands, const ImuSample& measurement,
+      const Attitude& attitude, const MotorCommands& proposed, bool heightUsable);
 };
 
 } // namespace itc

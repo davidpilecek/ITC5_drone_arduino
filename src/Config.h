@@ -11,7 +11,7 @@
 //
 // These choices take effect when the sketch is compiled, not while it is running.
 #ifndef ITC_OUTPUT_MODE
-#define ITC_OUTPUT_MODE 0
+#define ITC_OUTPUT_MODE 2
 #endif
 
 #if ITC_OUTPUT_MODE < 0 || ITC_OUTPUT_MODE > 3
@@ -40,6 +40,15 @@ constexpr uint8_t RANGE_SDA = 17;
 constexpr uint32_t RANGE_I2C_HZ = 400000;
 constexpr uint32_t USB_BAUD = 500000;
 constexpr uint32_t MAV_BAUD = 115200;
+
+// MAVLink diagnostics go to the air ESP32 on Serial8, separate from USB logs.
+constexpr bool MAV_ENABLED = true;
+constexpr uint8_t MAV_SYSTEM_ID = 1;
+constexpr uint8_t MAV_COMPONENT_ID = 1; // MAV_COMP_ID_AUTOPILOT1
+constexpr uint32_t MAV_HEARTBEAT_PERIOD_MS = 1000;
+// A snapshot contains 53 named values, spread over successive control cycles.
+// 4 snapshots/s use at most about 6.4 kB/s, below 115200-baud UART capacity.
+constexpr uint32_t MAV_DIAGNOSTIC_PERIOD_MS = 250;
 
 // ============================================================================
 // 3. RADIO CHANNELS AND SAFETY TIMEOUTS

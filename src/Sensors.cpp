@@ -4,56 +4,93 @@
 namespace itc {
 
 // ============================================================================
-// PART 1: MPU6500 -- acceleration and rotation
+// PART 1: SparkFun ICM-20948 -- acceleration and rotation
 // ============================================================================
 
-Imu::Imu() : device_(SPI1, config::IMU_CS) {
-  // Construct the driver with its SPI bus and chip-select pin.
-}
+Imu::Imu() = default;
 
 bool Imu::begin() {
+  started_ = false;
+  hasSample_ = false;
+  pinMode(config::IMU_CS, OUTPUT);
+  digitalWrite(config::IMU_CS, HIGH);
   SPI1.setMISO(config::IMU_MISO);
   SPI1.setMOSI(config::IMU_MOSI);
   SPI1.setSCK(config::IMU_SCK);
-  ICM_20948_fss_t myFSS;
-  myFSS.a = gpm2;
-  myFSS.g = dps250;
-  myICM.setFullScale((ICM_20948_Internal_Acc | ICM_20948_Internal_Gyr), myFSS);
-
-  ICM_20948_dlpcfg_t myDLPcfg;
-  myDLPcfg.a = acc_d473bw_n499bw;
-  myDLPcfg.g = gyr_d361bw4_n376bw5;
-
-  // Each call returns a negative number if configuration failed.
-  if (device_.begin6Axis() < 0) {
-    return false;
-  }
-  if (myICM.status != ICM_20948_Stat_Ok) {
-    return false;
-  }
-  if (device_.setSrd(0) < 0) {
-    return false;
+  SPI1.begin();
+  delay(100);
+  // Same bus speed as the working standalone sketch.
+  device_.begin(config::IMU_CS, SPI1, 100000);
+  if (device_.status != ICM_20948_Stat_Ok) return false;
+  ICM_20948_fss_t fullScale = {};
+  fullScale.a = gpm2;
+  fullScale.g = dps250;
+  if (device_.setFullScale(ICM_20948_Internal_Acc | ICM_20948_Internal_Gyr,
+      fullScale) != ICM_20948_Stat_Ok) return false;
+  started_ = true;
+  ImuSample firstSample;
+  const uint32_t waitStartedMs = millis();
+  while (!readFresh(firstSample)) {
+    if (uint32_t(millis() - waitStartedMs) >= 100) {
+      started_ = false;
+      return false;
+    }
+    delay(1);
   }
   return true;
 }
 
-
+bool Imu::readFresh(ImuSample& measurement) {
+  if (!started_ || !device_.dataReady()
+      || device_.status != ICM_20948_Stat_Ok) return false;
+  device_.getAGMT();
+  if (device_.status != ICM_20948_Stat_Ok) return false;
+  // SparkFun getters return mg and degrees/s, independent of full-scale range.
+  const float accelG[3] = {
+      device_.accX() * 0.001f, device_.accY() * 0.001f, device_.accZ() * 0.001f};
+  const float gyroDps[3] = {device_.gyrX(), device_.gyrY(), device_.gyrZ()};
+  for (unsigned axis = 0; axis < 3; ++axis) {
+    measurement.accelG[axis] = accelG[axis] - config::ACCEL_BIAS_G[axis];
+    measurement.gyroDps[axis] = gyroDps[axis] - config::GYRO_BIAS_DPS[axis];
+  }
+  // AK09916 ST1 bit 0 = data ready; ST2 bit 3 = magnetic overflow.
+  // Magnetometer validity is separate from accelerometer/gyro validity.
+  measurement.magValid = (device_.agmt.magStat1 & 0x01) != 0
+      && (device_.agmt.magStat2 & 0x08) == 0;
+  if (measurement.magValid) {
+    const float raw[3] = {device_.magX(), device_.magY(), device_.magZ()};
+    for (unsigned axis = 0; axis < 3; ++axis) {
+      measurement.magRawUt[axis] = raw[axis];
+      measurement.magUt[axis] = (raw[axis] - magCalibration_.biasUt[axis])
+          * magCalibration_.scale[axis];
+      measurement.magValid = measurement.magValid
+          && isfinite(raw[axis]) && isfinite(measurement.magUt[axis]);
+    }
+    measurement.magCalibrated = measurement.magValid && magCalibration_.valid;
+  }
+  lastSample_ = measurement;
+  lastSampleUs_ = micros();
+  hasSample_ = true;
+  return true;
+}
 
 ImuSample Imu::read() {
-  int16_t rawAcceleration[3];
-  int16_t rawRotation[3];
-  device_.getMotion6(
-      &rawAcceleration[0], &rawAcceleration[1], &rawAcceleration[2],
-      &rawRotation[0], &rawRotation[1], &rawRotation[2]);
-
-  // The sensor supplies integer counts. Convert them into physical units,
-  // then remove the measured stationary offset for each axis.
   ImuSample measurement;
+  if (readFresh(measurement)) return measurement;
+  // Reuse a recent reading when the control loop runs faster than the sensor.
+  if (started_ && hasSample_ && uint32_t(micros() - lastSampleUs_) < 20000
+      && (device_.status == ICM_20948_Stat_Ok
+          || device_.status == ICM_20948_Stat_NoData)) {
+    measurement = lastSample_;
+    // No fresh AGMT transaction: do not advertise cached magnetic data as new.
+    measurement.magValid = false;
+    measurement.magCalibrated = false;
+    return measurement;
+  }
+  // Nonfinite samples are rejected by the existing attitude estimator.
   for (unsigned axis = 0; axis < 3; ++axis) {
-    measurement.accelG[axis] = rawAcceleration[axis] / config::ACCEL_LSB_PER_G
-        - config::ACCEL_BIAS_G[axis];
-    measurement.gyroDps[axis] = rawRotation[axis] / config::GYRO_LSB_PER_DPS
-        - config::GYRO_BIAS_DPS[axis];
+    measurement.accelG[axis] = NAN;
+    measurement.gyroDps[axis] = NAN;
   }
   return measurement;
 }
@@ -67,7 +104,19 @@ ImuCalibration Imu::calibrate(unsigned numberOfSamples) {
   // Average many stationary readings. Existing offsets are added back because
   // this routine reports REPLACEMENT offsets, not corrections to the old ones.
   for (unsigned sampleNumber = 0; sampleNumber < numberOfSamples; ++sampleNumber) {
-    const ImuSample measurement = read();
+    ImuSample measurement;
+    const uint32_t waitStartedMs = millis();
+    // Average distinct updates, with a bounded wait on sensor failure.
+    while (!readFresh(measurement)) {
+      if (!started_ || uint32_t(millis() - waitStartedMs) >= 100) {
+        for (unsigned axis = 0; axis < 3; ++axis) {
+          calibration.accelBiasG[axis] = NAN;
+          calibration.gyroBiasDps[axis] = NAN;
+        }
+        return calibration;
+      }
+      delay(1);
+    }
     for (unsigned axis = 0; axis < 3; ++axis) {
       calibration.accelBiasG[axis] += measurement.accelG[axis] + config::ACCEL_BIAS_G[axis];
       calibration.gyroBiasDps[axis] += measurement.gyroDps[axis] + config::GYRO_BIAS_DPS[axis];
@@ -81,6 +130,57 @@ ImuCalibration Imu::calibrate(unsigned numberOfSamples) {
 
   // A level stationary sensor should read +1 g on its Z axis, not zero.
   calibration.accelBiasG[2] -= 1.0f;
+  return calibration;
+}
+
+bool Imu::setMagnetometerCalibration(const MagnetometerCalibration& calibration) {
+  if (!calibration.valid) return false;
+  for (unsigned axis = 0; axis < 3; ++axis) {
+    if (!isfinite(calibration.biasUt[axis]) || !isfinite(calibration.scale[axis])
+        || calibration.scale[axis] <= 0.0f) return false;
+  }
+  magCalibration_ = calibration;
+  // Invalidate the cached result computed with the previous coefficients.
+  lastSample_.magValid = false;
+  lastSample_.magCalibrated = false;
+  return true;
+}
+
+MagnetometerCalibration Imu::calibrateMagnetometer(uint32_t durationMs) {
+  MagnetometerCalibration calibration;
+  if (!started_ || durationMs < 1000 || durationMs > 300000) return calibration;
+  float minimum[3] = {INFINITY, INFINITY, INFINITY};
+  float maximum[3] = {-INFINITY, -INFINITY, -INFINITY};
+  unsigned accepted = 0;
+  const uint32_t startMs = millis();
+  while (uint32_t(millis() - startMs) < durationMs) {
+    ImuSample measurement;
+    if (readFresh(measurement) && measurement.magValid) {
+      for (unsigned axis = 0; axis < 3; ++axis) {
+        const float value = measurement.magRawUt[axis];
+        if (value < minimum[axis]) minimum[axis] = value;
+        if (value > maximum[axis]) maximum[axis] = value;
+      }
+      ++accepted;
+    }
+    // Magnetometer updates more slowly than accel/gyro; avoid tight polling.
+    delay(20);
+  }
+  if (accepted < 100) return calibration;
+  float radius[3];
+  float meanRadius = 0.0f;
+  for (unsigned axis = 0; axis < 3; ++axis) {
+    radius[axis] = (maximum[axis] - minimum[axis]) * 0.5f;
+    // Reject stationary/poorly excited axes and degenerate fits.
+    if (!isfinite(radius[axis]) || radius[axis] < 5.0f) return calibration;
+    calibration.biasUt[axis] = (maximum[axis] + minimum[axis]) * 0.5f;
+    meanRadius += radius[axis] / 3.0f;
+  }
+  for (unsigned axis = 0; axis < 3; ++axis) {
+    calibration.scale[axis] = meanRadius / radius[axis];
+  }
+  calibration.valid = true;
+  setMagnetometerCalibration(calibration);
   return calibration;
 }
 

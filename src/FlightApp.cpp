@@ -12,6 +12,9 @@ void FlightApp::begin() {
   // Start sending STOP frames before doing anything that could take a long time.
   motors_.begin();
 
+  // Serial8 is used only for MAVLink. USB Serial remains the text log.
+  telemetry_.begin();
+
   imuReady_ = imu_.begin();
   if (!imuReady_) {
     Serial.println("IMU initialization failed; stop frames remain active.");
@@ -130,6 +133,18 @@ void FlightApp::update() {
     previousPrintTimeMs_ = millis();
     printTelemetry(pilotCommands, measuredAttitude);
   }
+
+  // STEP 9 -- Capture diagnostics slowly; send one packet at a time after control.
+  // Sensors are not read again and controllers are not recalculated for telemetry.
+  const uint32_t nowMs = millis();
+  if (telemetry_.snapshotDue(nowMs)) {
+    captureMavlinkDiagnostics(nowMs, pilotCommands, imuReading, measuredAttitude,
+                             requestedMotorCommands, heightMeasurementUsable);
+  }
+  const MotorStatus latestMotorStatus = motors_.status();
+  const bool telemetryHealthy = controlProposal.ready && pilotCommands.valid
+      && (ITC_OUTPUT_MODE != 3 || controlProposal.heightReady);
+  telemetry_.update(nowMs, latestMotorStatus.armed, ITC_OUTPUT_MODE, telemetryHealthy);
 }
 
 // ============================================================================
@@ -145,11 +160,13 @@ MotorCommands FlightApp::calculateMotorCommands(
 
   // A default MotorCommands record contains four zero commands.
   MotorCommands motorCommands;
+  Setpoints desired = mapCommands(pilotCommands);
+  diagnosticSetpoints_ = desired;
+  diagnosticCorrections_ = Effort{};
+  attitudeControlActive_ = false;
   if (ITC_OUTPUT_MODE == 0) {
     return motorCommands;
   }
-
-  Setpoints desired = mapCommands(pilotCommands);
 
   if (ITC_OUTPUT_MODE == 1) {
     const bool throttleAboveMinimum = pilotCommands.throttleUs > config::THROTTLE_LOW_US;
@@ -173,6 +190,7 @@ MotorCommands FlightApp::calculateMotorCommands(
         && pilotCommands.throttleUs > config::THROTTLE_LOW_US;
     resetAttitudeIntegral = pilotCommands.throttleUs < 1060;
   }
+  diagnosticSetpoints_ = desired;
 
   if (!runAttitudeController) {
     // Forget old accumulated errors so they do not carry into the next takeoff.
@@ -183,7 +201,90 @@ MotorCommands FlightApp::calculateMotorCommands(
 
   const Effort attitudeCorrections = attitudeController_.update(
       desired, measuredAttitude, elapsedSeconds, resetAttitudeIntegral);
+  diagnosticCorrections_ = attitudeCorrections;
+  attitudeControlActive_ = true;
   return mixQuad(desired.collective, attitudeCorrections);
+}
+
+// Each name is a NAMED_VALUE_FLOAT label in QGroundControl's MAVLink Inspector.
+// All values in this batch share one timestamp, even though transmission is paced.
+void FlightApp::captureMavlinkDiagnostics(
+    uint32_t nowMs, const RcState& pilotCommands, const ImuSample& measurement,
+    const Attitude& attitude, const MotorCommands& proposed, bool heightUsable) {
+  const RangeState& height = range_.state();
+  const MotorStatus actual = motors_.status();
+  telemetry_.beginSnapshot(nowMs);
+
+  // 1. Mode, real arming state and range feedback. Invalid height is NOT zero.
+  telemetry_.addValue("mode", ITC_OUTPUT_MODE);
+  telemetry_.addValue("armed", actual.armed);
+  telemetry_.addValue("rc_ok", pilotCommands.valid);
+  telemetry_.addValue("h_ok", heightUsable);
+  telemetry_.addValue("range_m", height.slantM);
+  telemetry_.addValue("height_m", heightUsable ? height.heightM : NAN);
+  telemetry_.addValue("rng_stat", height.status);
+
+  // 2. Calibrated sensor-axis values before the attitude estimator's filtering.
+  telemetry_.addValue("ax_g", measurement.accelG[0]);
+  telemetry_.addValue("ay_g", measurement.accelG[1]);
+  telemetry_.addValue("az_g", measurement.accelG[2]);
+  telemetry_.addValue("gx_dps", measurement.gyroDps[0]);
+  telemetry_.addValue("gy_dps", measurement.gyroDps[1]);
+  telemetry_.addValue("gz_dps", measurement.gyroDps[2]);
+  telemetry_.addValue("mx_uT", measurement.magValid ? measurement.magUt[0] : NAN);
+  telemetry_.addValue("my_uT", measurement.magValid ? measurement.magUt[1] : NAN);
+  telemetry_.addValue("mz_uT", measurement.magValid ? measurement.magUt[2] : NAN);
+  telemetry_.addValue("mag_ok", measurement.magValid);
+  telemetry_.addValue("mag_cal", measurement.magCalibrated);
+  telemetry_.addValue("roll_deg", attitude.rollDeg);
+  telemetry_.addValue("pitch_deg", attitude.pitchDeg);
+  telemetry_.addValue("yaw_deg", attitude.yawDeg);
+  telemetry_.addValue("att_ok", attitude.valid);
+
+  // 3. Electrical RPM, not shaft RPM. The driver's invalid sentinel becomes NaN.
+  // addValue takes literals so misspelled/too-long names fail at compile time.
+  float erpm[MOTOR_COUNT];
+  for (unsigned motor = 0; motor < MOTOR_COUNT; ++motor) {
+    erpm[motor] = electricalRpm_[motor] == 0xffffffffu ? NAN : float(electricalRpm_[motor]);
+  }
+  telemetry_.addValue("erpm_FL", erpm[0]);
+  telemetry_.addValue("erpm_FR", erpm[1]);
+  telemetry_.addValue("erpm_RL", erpm[2]);
+  telemetry_.addValue("erpm_RR", erpm[3]);
+
+  // 4. req = proposed DShot command; out = latest applied command after guarding.
+  telemetry_.addValue("req_FL", proposed.value[0]);
+  telemetry_.addValue("req_FR", proposed.value[1]);
+  telemetry_.addValue("req_RL", proposed.value[2]);
+  telemetry_.addValue("req_RR", proposed.value[3]);
+  telemetry_.addValue("out_FL", actual.applied[0]);
+  telemetry_.addValue("out_FR", actual.applied[1]);
+  telemetry_.addValue("out_RL", actual.applied[2]);
+  telemetry_.addValue("out_RR", actual.applied[3]);
+
+  // 5. Requested motion and corrections already computed by the controller.
+  telemetry_.addValue("sp_roll", diagnosticSetpoints_.rollDeg);
+  telemetry_.addValue("sp_pitch", diagnosticSetpoints_.pitchDeg);
+  telemetry_.addValue("sp_yaw", diagnosticSetpoints_.yawDps);
+  telemetry_.addValue("sp_thr", diagnosticSetpoints_.collective);
+  telemetry_.addValue("ctl_roll", diagnosticCorrections_.roll);
+  telemetry_.addValue("ctl_pitch", diagnosticCorrections_.pitch);
+  telemetry_.addValue("ctl_yaw", diagnosticCorrections_.yaw);
+  telemetry_.addValue("ctl_on", attitudeControlActive_);
+
+  // 6. Height-controller state is meaningful in modes 0 and 3.
+  telemetry_.addValue("h_req_m", heightController_.requestedM);
+  telemetry_.addValue("h_tgt_m", heightController_.targetM);
+  telemetry_.addValue("ground_m", heightController_.groundM);
+  telemetry_.addValue("vz_mps", heightController_.velocityMps);
+  telemetry_.addValue("h_thr", heightController_.collective);
+  telemetry_.addValue("h_stage", heightController_.stage);
+  telemetry_.addValue("h_age_ms", height.acceptedUs == 0 ? NAN
+      : float(uint32_t(micros() - height.acceptedUs)) * 0.001f);
+  telemetry_.addValue("loop_us", timing_.maxLoopUs);
+  telemetry_.addValue("range_us", timing_.maxRangeUs);
+  telemetry_.addValue("overruns", timing_.overruns);
+  telemetry_.addValue("rc_thr_us", pilotCommands.throttleUs);
 }
 
 // ============================================================================
