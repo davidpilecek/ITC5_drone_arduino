@@ -29,8 +29,15 @@ struct MagnetometerCalibration {
 class Imu {
  public:
   Imu();
-  bool begin();
+  // Fast mode is for standalone measurement tests: configurable SPI, DLPF bypass.
+  // Default false preserves the flight application's existing configuration.
+  bool begin(bool fastMeasurements = false, uint32_t measurementSpiHz = 7000000);
+  const char* initializationStep() const { return initializationStep_; }
+  const char* statusString() { return device_.statusString(); }
   ImuSample read();
+  // Returns false unless the device signals new data. Never returns the cache.
+  // One ready event is NOT proof that every axis group updated together.
+  bool readFresh(ImuSample& measurement);
   ImuCalibration calibrate(unsigned numberOfSamples = 12000);
   // Blocking setup-only routine; rotates vehicle by hand for durationMs.
   // Returns and applies a valid result; failure leaves old calibration intact.
@@ -39,8 +46,8 @@ class Imu {
   MagnetometerCalibration magnetometerCalibration() const { return magCalibration_; }
 
  private:
-  bool readFresh(ImuSample& measurement);
   ICM_20948_SPI device_;
+  const char* initializationStep_ = "not started";
   bool started_ = false;
   bool hasSample_ = false;
   uint32_t lastSampleUs_ = 0;

@@ -5,6 +5,7 @@
 #include "Motors.h"
 #include "Control.h"
 #include "FlightTelemetry.h"
+#include "ImuSdLogger.h"
 
 namespace itc {
 
@@ -26,6 +27,7 @@ class FlightApp {
   AttitudeController attitudeController_;
   HeightController heightController_;
   FlightTelemetry telemetry_;
+  ImuSdLogger imuLogger_;
 
   // Copies of the calculations already performed in the current control cycle.
   // Logging these must never run a controller for a second time.

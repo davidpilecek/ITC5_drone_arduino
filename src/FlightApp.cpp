@@ -44,6 +44,11 @@ void FlightApp::begin() {
   }
 
   printStartupInformation();
+  imuLogger_.begin();
+  if (config::SD_IMU_LOG_ENABLED) {
+    Serial.println("IMU SD logging enabled: USB S stops/saves, L starts a new file.");
+    Serial.println("SD access waits for disarmed + arm switch OFF; never remove card while active.");
+  }
   previousControlTimeUs_ = micros();
 }
 
@@ -73,6 +78,7 @@ void FlightApp::update() {
 
   // STEP 3 -- Read acceleration/rotation, then estimate the vehicle's angles.
   const ImuSample imuReading = imu_.read();
+  const uint32_t imuReadingTimeUs = config::SD_IMU_LOG_ENABLED ? micros() : 0;
   const Attitude& measuredAttitude = estimator_.update(imuReading, elapsedSeconds);
 
   // STEP 4 -- Check whether the distance sensor has a new measurement.
@@ -145,6 +151,23 @@ void FlightApp::update() {
   const bool telemetryHealthy = controlProposal.ready && pilotCommands.valid
       && (ITC_OUTPUT_MODE != 3 || controlProposal.heightReady);
   telemetry_.update(nowMs, latestMotorStatus.armed, ITC_OUTPUT_MODE, telemetryHealthy);
+
+  // STEP 10 -- Sampling is a bounded RAM copy; no card calls occur in sample().
+  // The optional USB commands request work; they never access SD themselves.
+  if (config::SD_IMU_LOG_ENABLED) {
+    if (Serial.available()) {
+      const int command = Serial.read();
+      if (command == 'S') imuLogger_.requestStop();
+      if (command == 'L') imuLogger_.requestStart();
+    }
+    imuLogger_.sample(imuReadingTimeUs, imuReading, measuredAttitude);
+    // Read the guard again immediately before servicing. An arm-switch OFF
+    // receiver snapshot prevents arming in its ISR while a card call is running.
+    const MotorStatus statusBeforeSd = motors_.status();
+    const bool safeToAccessCard = !statusBeforeSd.armed
+        && pilotCommands.armUs <= config::ARM_LOW_US;
+    imuLogger_.service(nowMs, safeToAccessCard);
+  }
 }
 
 // ============================================================================
@@ -285,6 +308,9 @@ void FlightApp::captureMavlinkDiagnostics(
   telemetry_.addValue("range_us", timing_.maxRangeUs);
   telemetry_.addValue("overruns", timing_.overruns);
   telemetry_.addValue("rc_thr_us", pilotCommands.throttleUs);
+  telemetry_.addValue("sd_rec", imuLogger_.recording());
+  telemetry_.addValue("sd_drop", imuLogger_.droppedSamples());
+  telemetry_.addValue("sd_queue", imuLogger_.queuedSamples());
 }
 
 // ============================================================================

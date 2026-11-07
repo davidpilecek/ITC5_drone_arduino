@@ -9,7 +9,7 @@ namespace itc {
 
 Imu::Imu() = default;
 
-bool Imu::begin() {
+bool Imu::begin(bool fastMeasurements, uint32_t measurementSpiHz) {
   started_ = false;
   hasSample_ = false;
   pinMode(config::IMU_CS, OUTPUT);
@@ -19,17 +19,36 @@ bool Imu::begin() {
   SPI1.setSCK(config::IMU_SCK);
   SPI1.begin();
   delay(100);
-  // Same bus speed as the working standalone sketch.
-  device_.begin(config::IMU_CS, SPI1, 100000);
+  // Ordinary begin() retains the original 100 kHz bus speed. Measurement tests
+  // can lower their clock without editing the shared flight sensor settings.
+  initializationStep_ = "SparkFun device startup (includes magnetometer)";
+  device_.begin(config::IMU_CS, SPI1, fastMeasurements ? measurementSpiHz : 100000);
   if (device_.status != ICM_20948_Stat_Ok) return false;
   ICM_20948_fss_t fullScale = {};
   fullScale.a = gpm2;
   fullScale.g = dps250;
+  initializationStep_ = "set accelerometer/gyro full-scale ranges";
   if (device_.setFullScale(ICM_20948_Internal_Acc | ICM_20948_Internal_Gyr,
       fullScale) != ICM_20948_Stat_Ok) return false;
+  if (fastMeasurements) {
+    const uint8_t sensors = ICM_20948_Internal_Acc | ICM_20948_Internal_Gyr;
+    initializationStep_ = "set continuous measurement mode";
+    if (device_.setSampleMode(sensors, ICM_20948_Sample_Mode_Continuous)
+        != ICM_20948_Stat_Ok) return false;
+    // Bypass gives nominal gyro 9000 Hz and accel 4500 Hz. There is no
+    // divider setting which makes BOTH produce independent 9000 Hz samples.
+    // SparkFun already defaults to bypass; make the test's intent explicit.
+    initializationStep_ = "bypass accelerometer digital filter";
+    if (device_.enableDLPF(ICM_20948_Internal_Acc, false)
+        != ICM_20948_Stat_Ok) return false;
+    initializationStep_ = "bypass gyroscope digital filter";
+    if (device_.enableDLPF(ICM_20948_Internal_Gyr, false)
+        != ICM_20948_Stat_Ok) return false;
+  }
   started_ = true;
   ImuSample firstSample;
   const uint32_t waitStartedMs = millis();
+  initializationStep_ = "wait for first fresh IMU reading (100 ms timeout)";
   while (!readFresh(firstSample)) {
     if (uint32_t(millis() - waitStartedMs) >= 100) {
       started_ = false;
@@ -37,6 +56,7 @@ bool Imu::begin() {
     }
     delay(1);
   }
+  initializationStep_ = "ready";
   return true;
 }
 

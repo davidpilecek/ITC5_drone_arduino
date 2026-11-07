@@ -18,6 +18,11 @@
 #error Select output mode 0, 1, 2 or 3.
 #endif
 
+// Set to 1 to enable IMU logging in Drone. May also be supplied as a build flag.
+#ifndef ITC_SD_IMU_LOG_ENABLED
+#define ITC_SD_IMU_LOG_ENABLED 0
+#endif
+
 // "itc::config" groups the project's settings under one name.
 // "constexpr" means a value is fixed when the program is compiled.
 namespace itc {
@@ -46,9 +51,18 @@ constexpr bool MAV_ENABLED = true;
 constexpr uint8_t MAV_SYSTEM_ID = 1;
 constexpr uint8_t MAV_COMPONENT_ID = 1; // MAV_COMP_ID_AUTOPILOT1
 constexpr uint32_t MAV_HEARTBEAT_PERIOD_MS = 1000;
-// A snapshot contains 53 named values, spread over successive control cycles.
-// 4 snapshots/s use at most about 6.4 kB/s, below 115200-baud UART capacity.
+// A snapshot contains 56 named values, spread over successive control cycles.
+// 4 snapshots/s use at most about 6.8 kB/s, below 115200-baud UART capacity.
 constexpr uint32_t MAV_DIAGNOSTIC_PERIOD_MS = 250;
+
+// Optional IMU recording. Enable, compile, then insert a card before power-on.
+// SD operations run ONLY disarmed with the radio arm switch OFF. Armed samples
+// remain in RAM until disarming; a full buffer drops logs rather than waiting.
+constexpr bool SD_IMU_LOG_ENABLED = ITC_SD_IMU_LOG_ENABLED != 0;
+constexpr uint32_t SD_IMU_SAMPLE_PERIOD_US = 10000; // 100 Hz, not control-loop rate.
+constexpr unsigned SD_IMU_BUFFER_SAMPLES = 4096;   // 256 KiB RAM2, ~40.96 s at 100 Hz.
+constexpr uint32_t SD_IMU_PARTIAL_WRITE_MS = 250;
+constexpr uint32_t SD_IMU_SYNC_MS = 1000;          // Metadata sync only while disarmed.
 
 // ============================================================================
 // 3. RADIO CHANNELS AND SAFETY TIMEOUTS
@@ -88,8 +102,8 @@ constexpr float ACCEL_LSB_PER_G = 16384.0f;
 constexpr float GYRO_LSB_PER_DPS = 131.0f;
 
 // Measured stationary offsets, in X/Y/Z order. Replace after calibration.
-constexpr float ACCEL_BIAS_G[3] = {0, 0, 0};
-constexpr float GYRO_BIAS_DPS[3] = {0, 0, 0};
+constexpr float ACCEL_BIAS_G[3] = {-0.01, -0.04, -0.05};
+constexpr float GYRO_BIAS_DPS[3] = {0.76, -0.68, 0.79};
 constexpr bool CALIBRATE_IMU_ON_BOOT = false;
 
 constexpr float ACCEL_FILTER = 0.2f;

@@ -58,6 +58,7 @@ Booleans and integer diagnostics are represented as floats for your sendFloat AP
 | vz_mps, h_thr, h_stage | Estimated vertical speed, height collective and height-controller stage |
 | loop_us, range_us, overruns | Existing maximum cycle gap, maximum range-read time, and cycle-overrun count |
 | rc_thr_us | Pilot's throttle channel in the 1000..2000 microsecond convention |
+| sd_rec, sd_drop, sd_queue | IMU log recording flag, lost samples, queued samples; see SD_LOGGING_GUIDE.md |
 
 FL=5, FR=6, RL=8, RR=4. DShot commands are not measured RPM or power percentages.
 The height-controller diagnostics are active in modes 0 and 3 only. Ground
@@ -73,12 +74,12 @@ or acknowledgements are implemented. CRSF remains the pilot input.
 
 ## Why four snapshots per second?
 
-53 unsigned MAVLink 2 named-value packets use at most 53 * 30 * 4 = 6360 bytes/s,
+56 unsigned MAVLink 2 named-value packets (including SD status) use at most 56 * 30 * 4 = 6720 bytes/s,
 plus roughly 21 bytes/s for the heartbeat. 115200 baud with 8N1 framing allows
 11520 bytes/s in theory. This leaves room for bridge overhead and avoids queuing
 53 messages together. No signed MAVLink transport is configured here.
 The scheduler has capacity for 56 values and checks its worst-case UART budget
-at compile time. Raising all 53 values to 10 Hz would exceed this UART's capacity.
+at compile time. Raising all 56 values to 10 Hz would exceed this UART's capacity.
 
 ## First hardware check
 
@@ -92,6 +93,6 @@ and watch loop_us/overruns before relying on this with active motor output.
 
 Add one telemetry_.addValue("shortname", measurement) line to
 captureMavlinkDiagnostics(). Choose a unique name of at most nine characters,
-document its units here, and check the field count stays within 56. If adding
+document its units here, and check the field count stays within 56 (now full). If adding
 more than 56 fields, increase MAX_VALUES in FlightTelemetry.h, then choose a
 period within the baud budget. The budget calculation uses that capacity automatically.
