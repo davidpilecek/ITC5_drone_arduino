@@ -33,11 +33,12 @@ namespace config {
 // ============================================================================
 constexpr uint8_t MOTOR_PINS[4] = {5, 6, 8, 4};
 
-// MPU6500 on SPI1. Keep these consistent with your actual wiring.
+// ICM-20948 on SPI1. Keep these consistent with your actual wiring.
 constexpr uint8_t IMU_CS = 0;
 constexpr uint8_t IMU_MISO = 1;
 constexpr uint8_t IMU_MOSI = 26;
 constexpr uint8_t IMU_SCK = 27;
+constexpr uint32_t IMU_SPI_HZ = 1000000; // Main application's SPI bit clock, not sample rate.
 
 // VL53L1X on Wire1. The CRSF receiver uses Serial5, RX21/TX20.
 constexpr uint8_t RANGE_SCL = 16;
@@ -87,7 +88,7 @@ constexpr uint32_t RANGE_STALE_US = 200000;    // Height mode stops after 0.20 s
 // ============================================================================
 // 4. SCHEDULE -- Us means microseconds; Ms means milliseconds
 // ============================================================================
-constexpr uint32_t CONTROL_PERIOD_US = 500;   // Target: 2000 control updates per second.
+constexpr uint32_t CONTROL_PERIOD_US = 1000; // Target: 1000 control updates per second.
 constexpr uint32_t RANGE_POLL_US = 5000;      // Check for a new range reading 200 times/s.
 constexpr uint32_t RANGE_PERIOD_MS = 50;     // Sensor produces 20 range readings/s.
 constexpr uint32_t RPM_PERIOD_US = 10000;    // Collect RPM 100 times/s.

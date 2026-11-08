@@ -39,6 +39,8 @@ class FlightApp {
   Timing timing_;
 
   uint32_t previousControlTimeUs_ = 0;
+  uint32_t timingWindowStartUs_ = 0;
+  uint32_t timingWindowCycles_ = 0;
   uint32_t previousRpmReadTimeUs_ = 0;
   uint32_t previousPrintTimeMs_ = 0;
 

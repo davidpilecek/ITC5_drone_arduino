@@ -15,9 +15,13 @@ void FlightApp::begin() {
   // Serial8 is used only for MAVLink. USB Serial remains the text log.
   telemetry_.begin();
 
-  imuReady_ = imu_.begin();
+  // Use the same 1 MHz bus setting verified in the standalone measurement test.
+  // true retains continuous operation with both internal digital filters bypassed.
+  imuReady_ = imu_.begin(true, config::IMU_SPI_HZ);
   if (!imuReady_) {
     Serial.println("IMU initialization failed; stop frames remain active.");
+    Serial.println(imu_.initializationStep());
+    Serial.println(imu_.statusString());
     while (true) {
       delay(1000);
     }
@@ -50,6 +54,8 @@ void FlightApp::begin() {
     Serial.println("SD access waits for disarmed + arm switch OFF; never remove card while active.");
   }
   previousControlTimeUs_ = micros();
+  timingWindowStartUs_ = previousControlTimeUs_;
+  timingWindowCycles_ = 0;
 }
 
 // ============================================================================
@@ -61,7 +67,7 @@ void FlightApp::update() {
   const RcState pilotCommands = receiver_.update();
   motors_.publishReceiver(pilotCommands);
 
-  // STEP 2 -- Wait until 500 microseconds have passed since the previous cycle.
+  // STEP 2 -- Start control when the configured period has passed (now 1 ms).
   // Returning here does not stop Arduino: loop() immediately calls us again.
   const uint32_t cycleStartUs = micros();
   const uint32_t elapsedUs = uint32_t(cycleStartUs - previousControlTimeUs_);
@@ -71,15 +77,25 @@ void FlightApp::update() {
   previousControlTimeUs_ = cycleStartUs; 
 
   timing_.maxLoopUs = max(timing_.maxLoopUs, elapsedUs);
-  if (elapsedUs > 1000) {
-    ++timing_.overruns;
+  ++timingWindowCycles_;
+  const uint32_t windowUs = uint32_t(cycleStartUs - timingWindowStartUs_);
+  if (windowUs >= 1000000) {
+    timing_.controlHz = timingWindowCycles_ * 1000000.0f / windowUs;
+    timingWindowStartUs_ = cycleStartUs;
+    timingWindowCycles_ = 0;
   }
   const float elapsedSeconds = elapsedUs * 1e-6f;
 
   // STEP 3 -- Read acceleration/rotation, then estimate the vehicle's angles.
+  const uint32_t imuReadStartUs = micros();
   const ImuSample imuReading = imu_.read();
-  const uint32_t imuReadingTimeUs = config::SD_IMU_LOG_ENABLED ? micros() : 0;
+  const uint32_t imuReadingTimeUs = micros();
+  timing_.maxImuReadUs = max(timing_.maxImuReadUs,
+      uint32_t(imuReadingTimeUs - imuReadStartUs));
+  const uint32_t estimatorStartUs = micros();
   const Attitude& measuredAttitude = estimator_.update(imuReading, elapsedSeconds);
+  timing_.maxEstimatorUs = max(timing_.maxEstimatorUs,
+      uint32_t(micros() - estimatorStartUs));
 
   // STEP 4 -- Check whether the distance sensor has a new measurement.
   const uint32_t rangeReadStartUs = micros();
@@ -168,6 +184,13 @@ void FlightApp::update() {
         && pilotCommands.armUs <= config::ARM_LOW_US;
     imuLogger_.service(nowMs, safeToAccessCard);
   }
+
+  // Measure completed work, including sensor, telemetry and optional SD calls.
+  // Radio parsing before cycleStartUs and idle polling are not included; the
+  // start-to-start interval and controlHz also reveal delays outside this work.
+  const uint32_t workUs = uint32_t(micros() - cycleStartUs);
+  timing_.maxWorkUs = max(timing_.maxWorkUs, workUs);
+  if (workUs > config::CONTROL_PERIOD_US) ++timing_.overruns;
 }
 
 // ============================================================================
@@ -333,11 +356,16 @@ void FlightApp::printStartupInformation() {
   Serial.print("ITC modular firmware, output mode ");
   Serial.println(ITC_OUTPUT_MODE);
   Serial.println("Motor order FL5 FR6 RL8 RR4; yaw has no absolute reference.");
+  Serial.print("Control target period us: ");
+  Serial.println(config::CONTROL_PERIOD_US);
+  Serial.print("IMU SPI clock Hz: ");
+  Serial.println(config::IMU_SPI_HZ);
   Serial.println(
       "time_ms,link,armed,throttle_us,roll_deg,pitch_deg,range_m,height_m,"
       "height_valid,range_status,rpm_FL,rpm_FR,rpm_RL,rpm_RR,"
       "cmd_FL,cmd_FR,cmd_RL,cmd_RR,max_loop_us,max_range_us,overruns,"
-      "height_request_m,height_target_m,vz_mps,height_collective,height_stage,ground_m");
+      "height_request_m,height_target_m,vz_mps,height_collective,height_stage,ground_m,"
+      "max_imu_us,max_estimator_us,max_work_us,control_hz");
 }
 
 void FlightApp::printTelemetry(const RcState& pilotCommands, const Attitude& measuredAttitude) {
@@ -356,12 +384,12 @@ void FlightApp::printTelemetry(const RcState& pilotCommands, const Attitude& mea
   // Build one comma-separated line in memory, then send it only if USB has room.
   // The % placeholders describe the corresponding values listed underneath.
   // Keeping one buffered write avoids waiting on USB in the control cycle.
-  char line[480];
+  char line[560];
   const int numberOfCharacters = snprintf(
       line, sizeof(line),
       "%lu,%u,%u,%u,%.2f,%.2f,%.3f,%.3f,%u,%u,"
       "%.1f,%.1f,%.1f,%.1f,%u,%u,%u,%u,%lu,%lu,%lu,"
-      "%.3f,%.3f,%.3f,%.3f,%u,%.3f\n",
+      "%.3f,%.3f,%.3f,%.3f,%u,%.3f,%lu,%lu,%lu,%.1f\n",
       (unsigned long)millis(),
       unsigned(pilotCommands.valid), unsigned(motorStatus.armed), unsigned(pilotCommands.throttleUs),
       measuredAttitude.rollDeg, measuredAttitude.pitchDeg,
@@ -373,7 +401,9 @@ void FlightApp::printTelemetry(const RcState& pilotCommands, const Attitude& mea
       (unsigned long)timing_.maxLoopUs, (unsigned long)timing_.maxRangeUs,
       (unsigned long)timing_.overruns,
       heightController_.requestedM, heightController_.targetM, heightController_.velocityMps,
-      heightController_.collective, unsigned(heightController_.stage), heightController_.groundM);
+      heightController_.collective, unsigned(heightController_.stage), heightController_.groundM,
+      (unsigned long)timing_.maxImuReadUs, (unsigned long)timing_.maxEstimatorUs,
+      (unsigned long)timing_.maxWorkUs, timing_.controlHz);
 
   const bool lineFitsBuffer = numberOfCharacters > 0 && numberOfCharacters < int(sizeof(line));
   if (Serial && lineFitsBuffer && Serial.availableForWrite() >= numberOfCharacters) {

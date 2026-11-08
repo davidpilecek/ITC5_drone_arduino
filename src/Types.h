@@ -110,9 +110,13 @@ struct MotorStatus {
 };
 
 struct Timing {
-  uint32_t maxLoopUs = 0;
+  uint32_t maxLoopUs = 0;      // Largest control start-to-start interval since boot.
   uint32_t maxRangeUs = 0;
-  uint32_t overruns = 0;  // Counts control-cycle gaps longer than 1000 microseconds.
+  uint32_t maxImuReadUs = 0;   // Includes driver overhead and interrupts during read().
+  uint32_t maxEstimatorUs = 0;
+  uint32_t maxWorkUs = 0;      // Control-start to end of work; excludes waiting gate.
+  uint32_t overruns = 0;      // Work durations longer than CONTROL_PERIOD_US.
+  float controlHz = 0.0f;     // Successful scheduling starts per second, ~1 s window.
 };
 
 } // namespace itc

@@ -68,17 +68,17 @@ ill-conditioned. A finite result is not a guarantee of arbitrary numerical accur
 
 Calculate coefficients in setup(), or when you intentionally change tuning or
 the controller period. They depend on tuning, not on each new sensor reading.
-The later discrete controller must execute with the Ts these coefficients use.
+AdrcController must execute with the Ts these coefficients use.
 Replacing Ts with irregular loop elapsed time would require a separate design.
 
-The alpha/beta/gamma values alone do not define a complete implementation: the
-next step needs the exact dual-feedback recurrence, previous-sample states,
-initialization/reset and output-limit handling. Those are intentionally not
-invented from coefficient names in this first step.
+AdrcController now implements the dual-feedback runtime, reset and limited-input
+feedback in ADRC.h/ADRC.cpp. See ADRC_runtime_test for its equations and software-only
+example. This coefficient-printing example still only calculates the parameters.
 
 
 TrackingDifferentiator is now declared in ADRC.h and implemented in ADRC.cpp;
 its former TD.cpp file is archived outside the library. See the separate
 ADRC_TD_test example for reference smoothing. This example still only prints coefficients.
+
 
 

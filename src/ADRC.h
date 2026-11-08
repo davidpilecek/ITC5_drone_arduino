@@ -46,6 +46,78 @@ struct AdrcCoefficients {
 AdrcCoefficients makeADRC_D(double wc, double kESO, double b0, double Ts);
 
 // ============================================================================
+// Second-order ADRC -- dual feedback, transposed direct form II.
+// ============================================================================
+
+struct AdrcOutput {
+  double requested = 0.0; // u: controller request before the local limiter.
+  double limited = 0.0;   // u_lim: value clipped and fed back by update().
+  bool saturated = false;
+  bool valid = false;     // Never apply a result whose valid flag is false.
+};
+
+// These are the three delay outputs in the diagram, NOT ESO state estimates.
+struct AdrcState {
+  double x1 = 0.0;
+  double x2 = 0.0;
+  double x3 = 0.0;
+};
+
+class AdrcController {
+ public:
+  AdrcController() = default;
+  explicit AdrcController(const AdrcCoefficients& coefficients);
+
+  // Copy precomputed coefficients and reset the three delays to zero.
+  // A rejected configuration leaves the previous configuration/state unchanged.
+  bool configure(const AdrcCoefficients& coefficients);
+
+  // One complete sample: calculate u, clip it, feed back u_lim, advance delays.
+  // Call once per coefficients.Ts seconds. Equal limits are allowed.
+  // This convenience method assumes its limiter determines the plant input.
+  AdrcOutput update(double reference, double measurement,
+                    double minimumInput, double maximumInput);
+
+  // Optional reference-rate feedforward, selectable independently per channel:
+  // u = (k1/b0)*reference + (k2/b0)*referenceRate + feedback.
+  // referenceRate is the TD's dref [reference units/s], NOT measured plant rate.
+  // The four-argument overload above is equivalent to referenceRate=0.
+  AdrcOutput update(double reference, double referenceRate, double measurement,
+                    double minimumInput, double maximumInput);
+
+  // For an external mixer/rate limiter, use these TWO calls instead of update:
+  // 1. calculate(r, y, requested) -- reads old delays; stages y and feedback.
+  // 2. commit(u_lim) -- advances delays using the input actually applied.
+  // Call them once, in order, during the SAME sample. No actuator writes occur.
+  // A pending sample must be committed or reset before calculating another one.
+  bool calculate(double reference, double measurement, double& requested);
+  bool calculate(double reference, double referenceRate,
+                 double measurement, double& requested);
+  bool commit(double appliedInput);
+
+  // Initialize for a stationary operating point with reference=measurement.
+  // reset() gives zero delays; reset(y0,u0) starts with a request of u0 when r=y0.
+  // Assumes zero reference rate at reset. A later nonzero rate adds feedforward.
+  // Also clears a pending sample. Invalid reset values leave everything intact.
+  bool reset(double measurement = 0.0, double appliedInput = 0.0);
+
+  bool valid() const { return configured_; }
+  bool awaitingAppliedInput() const { return pending_; }
+  double samplePeriod() const { return coefficients_.Ts; }
+  AdrcState state() const { return state_; }
+
+ private:
+  AdrcCoefficients coefficients_;
+  double referenceRateGain_ = 0.0; // k2/b0, computed once during configure().
+  AdrcState state_;
+  bool configured_ = false;
+  bool pending_ = false;
+  // Current-sample temporaries for calculate()/commit(), not extra delay states.
+  double pendingMeasurement_ = 0.0;
+  double pendingFeedback_ = 0.0;
+};
+
+// ============================================================================
 // Tracking differentiator -- smooth a requested reference before ADRC uses it.
 // ============================================================================
 

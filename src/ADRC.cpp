@@ -92,6 +92,124 @@ AdrcCoefficients makeADRC_D(double wc, double kESO, double b0, double Ts) {
 }
 
 // ============================================================================
+// Dual-feedback ADRC runtime -- three delays, no sensor or actuator operations.
+// ============================================================================
+
+AdrcController::AdrcController(const AdrcCoefficients& coefficients) {
+  configure(coefficients);
+}
+
+bool AdrcController::configure(const AdrcCoefficients& coefficients) {
+  if (!coefficients.valid || !std::isfinite(coefficients.Ts)
+      || coefficients.Ts <= 0.0 || !std::isfinite(coefficients.b0)
+      || coefficients.b0 == 0.0 || !std::isfinite(coefficients.k2)) return false;
+  const double referenceRateGain = coefficients.k2 / coefficients.b0;
+  if (!std::isfinite(referenceRateGain)) return false;
+  const double used[] = {
+      coefficients.k1_over_b0,
+      coefficients.alpha1, coefficients.alpha2, coefficients.alpha3,
+      coefficients.beta0, coefficients.beta1, coefficients.beta2,
+      coefficients.gamma0, coefficients.gamma1, coefficients.gamma2};
+  for (double value : used) {
+    if (!std::isfinite(value)) return false;
+  }
+  coefficients_ = coefficients;
+  referenceRateGain_ = referenceRateGain;
+  state_ = AdrcState{};
+  pendingMeasurement_ = pendingFeedback_ = 0.0;
+  pending_ = false;
+  configured_ = true;
+  return true;
+}
+
+bool AdrcController::calculate(double reference, double measurement, double& requested) {
+  return calculate(reference, 0.0, measurement, requested);
+}
+
+bool AdrcController::calculate(double reference, double referenceRate,
+                               double measurement, double& requested) {
+  requested = 0.0;
+  if (!configured_ || pending_ || !std::isfinite(reference)
+      || !std::isfinite(referenceRate) || !std::isfinite(measurement)) return false;
+
+  // Follow the two top summers in the diagram. Alpha feedback uses f, NOT u.
+  const double feedback = state_.x1 - coefficients_.beta0 * measurement;
+  double feedforward = coefficients_.k1_over_b0 * reference;
+  // Keep the original arithmetic for channels which omit the rate term.
+  if (referenceRate != 0.0) feedforward += referenceRateGain_ * referenceRate;
+  const double command = feedforward + feedback;
+  if (!std::isfinite(feedback) || !std::isfinite(command)) return false;
+
+  pendingMeasurement_ = measurement;
+  pendingFeedback_ = feedback;
+  pending_ = true;
+  requested = command;
+  return true;
+}
+
+bool AdrcController::commit(double appliedInput) {
+  if (!configured_ || !pending_ || !std::isfinite(appliedInput)) return false;
+  const AdrcCoefficients& p = coefficients_;
+  const double y = pendingMeasurement_;
+  const double f = pendingFeedback_;
+
+  // These become the delay outputs at the NEXT sample. u_lim[k] enters here,
+  // so it affects u[k+1], not the request u[k] that has already been calculated.
+  // Compute all three using the OLD states before assigning any of them.
+  const double next1 = state_.x2 - p.beta1 * y + p.gamma0 * appliedInput - p.alpha1 * f;
+  const double next2 = state_.x3 - p.beta2 * y + p.gamma1 * appliedInput - p.alpha2 * f;
+  const double next3 = p.gamma2 * appliedInput - p.alpha3 * f;
+  if (!std::isfinite(next1) || !std::isfinite(next2) || !std::isfinite(next3)) {
+    return false;
+  }
+  state_ = {next1, next2, next3};
+  pending_ = false;
+  return true;
+}
+
+AdrcOutput AdrcController::update(double reference, double measurement,
+                                  double minimumInput, double maximumInput) {
+  return update(reference, 0.0, measurement, minimumInput, maximumInput);
+}
+
+AdrcOutput AdrcController::update(double reference, double referenceRate,
+                                  double measurement,
+                                  double minimumInput, double maximumInput) {
+  AdrcOutput result;
+  if (!std::isfinite(minimumInput) || !std::isfinite(maximumInput)
+      || minimumInput > maximumInput) return result;
+  if (!calculate(reference, referenceRate, measurement, result.requested)) return result;
+
+  result.limited = result.requested;
+  if (result.limited < minimumInput) result.limited = minimumInput;
+  if (result.limited > maximumInput) result.limited = maximumInput;
+  result.saturated = result.limited != result.requested;
+  result.valid = commit(result.limited);
+  return result;
+}
+
+bool AdrcController::reset(double measurement, double appliedInput) {
+  if (!configured_ || !std::isfinite(measurement)
+      || !std::isfinite(appliedInput)) return false;
+  const AdrcCoefficients& p = coefficients_;
+  const double feedback = appliedInput - p.k1_over_b0 * measurement;
+
+  // Start at r=y0 and u=u0. The lower delays are initialized consistently with
+  // a held operating point. The first request is u0 (subject to roundoff).
+  const double initial1 = feedback + p.beta0 * measurement;
+  const double initial3 = p.gamma2 * appliedInput - p.alpha3 * feedback;
+  const double initial2 = initial3 - p.beta2 * measurement
+      + p.gamma1 * appliedInput - p.alpha2 * feedback;
+  if (!std::isfinite(feedback) || !std::isfinite(initial1)
+      || !std::isfinite(initial2) || !std::isfinite(initial3)) return false;
+
+  state_ = {initial1, initial2, initial3};
+  pendingMeasurement_ = pendingFeedback_ = 0.0;
+  pending_ = false;
+  return true;
+}
+
+// ============================================================================
 // Han tracking differentiator -- reference and reference-rate generation.
 // ============================================================================
 

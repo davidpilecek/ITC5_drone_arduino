@@ -75,3 +75,10 @@ with zero rate if you want to avoid a transition from zero.
 
 The TD is only a reference generator. It does not yet calculate the ADRC actuator
 command, close the ESO feedback loop, or implement actuator saturation handling.
+
+
+AdrcController now implements the separate dual-feedback runtime in the same
+ADRC module. See ADRC_runtime_test for its local/external limiting interfaces.
+The TD still only shapes the reference. For selected channels, its dref can now
+be passed to the optional reference-rate feedforward overload in AdrcController.
+
