@@ -132,7 +132,7 @@ constexpr float YAW_KD = 0.00015f;
 // ============================================================================
 // 7. MOTOR COMMANDS -- a command fraction is NOT a power or RPM fraction
 // ============================================================================
-constexpr float BENCH_MAX_COMMAND = 0.10f;
+constexpr float BENCH_MAX_COMMAND = 0.70f;
 constexpr uint16_t MOTOR_IDLE_COMMAND = 100;
 constexpr uint8_t MOTOR_POLE_PAIRS = 7; // Shaft RPM = electrical RPM / pole pairs.
 
